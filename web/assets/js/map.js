@@ -1,7 +1,12 @@
 import { state } from "./state.js";
-import { getJson } from "./util.js";
+import {
+  beginStationsByBboxRequest,
+  cancelStationsByBboxRequest,
+  fetchStationsByBbox,
+} from "./api.js";
+import { getLayerByName, getSourceOfVectorLayerByName } from "./layerInstruments.js";
 
-let _bboxAbortCtrl = null;
+const STATIONS_LAYER_NAME = "stations";
 
 export function drawMap({ render, loadStationSchedule }) {
   if (!window.ol) return;
@@ -29,12 +34,12 @@ export function drawMap({ render, loadStationSchedule }) {
 function initMap({ render, loadStationSchedule }) {
   const ol = window.ol;
 
-  state.mapVectorSource = new ol.source.Vector();
+  const mapVectorSource = new ol.source.Vector();
 
-  state.mapClusterSource = new ol.source.Cluster({
+  const mapClusterSource = new ol.source.Cluster({
     distance: 40,
     minDistance: 20,
-    source: state.mapVectorSource,
+    source: mapVectorSource,
   });
 
   const _styleCache = new Map();
@@ -43,44 +48,48 @@ function initMap({ render, loadStationSchedule }) {
     const n = members.length;
     if (!_styleCache.has(n)) {
       if (n === 1) {
-        _styleCache.set(n, new ol.style.Style({
-          image: new ol.style.Circle({
-            radius: 7,
-            fill: new ol.style.Fill({ color: "#22c55e" }),
-            stroke: new ol.style.Stroke({ color: "#0b1220", width: 2 }),
-          }),
-        }));
+        _styleCache.set(
+          n,
+          new ol.style.Style({
+            image: new ol.style.Circle({
+              radius: 7,
+              fill: new ol.style.Fill({ color: "#22c55e" }),
+              stroke: new ol.style.Stroke({ color: "#0b1220", width: 2 }),
+            }),
+          })
+        );
       } else {
         const r = Math.min(9 + Math.ceil(Math.log2(n + 1)) * 2.5, 26);
-        _styleCache.set(n, new ol.style.Style({
-          image: new ol.style.Circle({
-            radius: r,
-            fill: new ol.style.Fill({ color: "#7c3aed" }),
-            stroke: new ol.style.Stroke({ color: "#0b1220", width: 2.5 }),
-          }),
-          text: new ol.style.Text({
-            text: String(n),
-            fill: new ol.style.Fill({ color: "#fff" }),
-            font: `bold ${Math.round(r * 0.85)}px sans-serif`,
-            offsetY: 1,
-          }),
-        }));
+        _styleCache.set(
+          n,
+          new ol.style.Style({
+            image: new ol.style.Circle({
+              radius: r,
+              fill: new ol.style.Fill({ color: "#7c3aed" }),
+              stroke: new ol.style.Stroke({ color: "#0b1220", width: 2.5 }),
+            }),
+            text: new ol.style.Text({
+              text: String(n),
+              fill: new ol.style.Fill({ color: "#fff" }),
+              font: `bold ${Math.round(r * 0.85)}px sans-serif`,
+              offsetY: 1,
+            }),
+          })
+        );
       }
     }
     return _styleCache.get(n);
   }
 
-  state.mapLayer = new ol.layer.Vector({
-    source: state.mapClusterSource,
+  const stationsLayer = new ol.layer.Vector({
+    source: mapClusterSource,
     style: clusterStyle,
   });
+  stationsLayer.set("name", STATIONS_LAYER_NAME);
 
   state.map = new ol.Map({
     target: state.mapContainer,
-    layers: [
-      new ol.layer.Tile({ source: new ol.source.OSM() }),
-      state.mapLayer,
-    ],
+    layers: [new ol.layer.Tile({ source: new ol.source.OSM() }), stationsLayer],
     view: new ol.View({
       center: ol.proj.fromLonLat([37.617, 55.755]),
       zoom: 6,
@@ -90,7 +99,7 @@ function initMap({ render, loadStationSchedule }) {
   state.map.on("pointermove", (evt) => {
     if (evt.dragging) return;
     const hit = state.map.hasFeatureAtPixel(evt.pixel, {
-      layerFilter: (l) => l === state.mapLayer,
+      layerFilter: (l) => l.get("name") === STATIONS_LAYER_NAME,
       hitTolerance: 8,
     });
     state.mapContainer.style.cursor = hit ? "pointer" : "";
@@ -98,7 +107,7 @@ function initMap({ render, loadStationSchedule }) {
 
   state.map.on("singleclick", async (evt) => {
     const features = state.map.getFeaturesAtPixel(evt.pixel, {
-      layerFilter: (l) => l === state.mapLayer,
+      layerFilter: (l) => l.get("name") === STATIONS_LAYER_NAME,
       hitTolerance: 12,
     });
     if (!features || features.length === 0) return;
@@ -127,20 +136,20 @@ function initMap({ render, loadStationSchedule }) {
 }
 
 export function destroyMap() {
-  if (_bboxAbortCtrl) { _bboxAbortCtrl.abort(); _bboxAbortCtrl = null; }
+  cancelStationsByBboxRequest();
   if (state.map) {
     state.map.setTarget(null);
     state.map.dispose();
     state.map = null;
   }
-  state.mapLayer = null;
-  state.mapVectorSource = null;
-  state.mapClusterSource = null;
   state.mapReady = false;
 }
 
 async function loadMapStations() {
-  if (!state.map || !state.mapVectorSource) return;
+  if (!state.map) return;
+  const vectorSource = getSourceOfVectorLayerByName(state.map, STATIONS_LAYER_NAME);
+  if (!vectorSource) return;
+
   const size = state.map.getSize();
   if (!size || !size[0]) return;
 
@@ -149,23 +158,25 @@ async function loadMapStations() {
   const sw = ol.proj.toLonLat([extent[0], extent[1]]);
   const ne = ol.proj.toLonLat([extent[2], extent[3]]);
 
-  if (_bboxAbortCtrl) _bboxAbortCtrl.abort();
-  _bboxAbortCtrl = new AbortController();
-  const { signal } = _bboxAbortCtrl;
+  const signal = beginStationsByBboxRequest();
 
   try {
-    const params = new URLSearchParams({
-      min_lat: sw[1].toFixed(4), max_lat: ne[1].toFixed(4),
-      min_lng: sw[0].toFixed(4), max_lng: ne[0].toFixed(4),
-      limit: "500",
-    });
-    const stations = await getJson(`/api/stations/by_bbox?${params}`, signal);
+    const stations = await fetchStationsByBbox(
+      {
+        min_lat: sw[1].toFixed(4),
+        max_lat: ne[1].toFixed(4),
+        min_lng: sw[0].toFixed(4),
+        max_lng: ne[0].toFixed(4),
+        limit: "500",
+      },
+      signal
+    );
     if (signal.aborted) return;
 
-    state.mapVectorSource.clear();
+    vectorSource.clear();
     for (const s of stations) {
       if (typeof s.lat !== "number" || typeof s.lng !== "number") continue;
-      state.mapVectorSource.addFeature(
+      vectorSource.addFeature(
         new ol.Feature({
           geometry: new ol.geom.Point(ol.proj.fromLonLat([s.lng, s.lat])),
           station: s,

@@ -16,14 +16,3 @@ export function toTime(s) {
 export function stationSubtitle(st) {
   return [st.settlement, st.region].filter(Boolean).join(" · ");
 }
-
-export async function getJson(url, signal) {
-  const opts = { headers: { Accept: "application/json" } };
-  if (signal) opts.signal = signal;
-  const r = await fetch(url, opts);
-  if (!r.ok) {
-    const t = await r.text().catch(() => "");
-    throw new Error(`HTTP ${r.status} ${t}`);
-  }
-  return r.json();
-}

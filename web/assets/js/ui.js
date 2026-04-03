@@ -1,8 +1,8 @@
 import { state, getStationByCode } from "./state.js";
 import { saveFavorites } from "./favorites.js";
-import { searchStations, loadStationSchedule, loadRoute } from "./api.js";
+import { fetchStationsForPicker, searchStations, loadStationSchedule, loadRoute } from "./api.js";
 import { destroyMap } from "./map.js";
-import { getJson, escapeHtml, stationSubtitle } from "./util.js";
+import { escapeHtml, stationSubtitle } from "./util.js";
 
 function bindStationPicker(inputId, resultsId, onSelect) {
   const input = document.getElementById(inputId);
@@ -14,7 +14,7 @@ function bindStationPicker(inputId, resultsId, onSelect) {
     clearTimeout(t);
     if (!q) { container.innerHTML = ""; return; }
     t = setTimeout(async () => {
-      const stations = await getJson(`/api/stations?q=${encodeURIComponent(q)}&limit=10`).catch(() => []);
+      const stations = await fetchStationsForPicker(q, 10).catch(() => []);
       if (!stations.length) { container.innerHTML = ""; return; }
       container.innerHTML = `<div class="list" style="margin-top:8px" role="list">
         ${stations.map((st) => `

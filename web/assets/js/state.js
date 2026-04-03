@@ -17,9 +17,6 @@ export const state = {
   mapVisible: true,
   mapContainer: null,
   map: null,
-  mapVectorSource: null,
-  mapClusterSource: null,
-  mapLayer: null,
   mapReady: false,
   searchTimer: null,
 };
